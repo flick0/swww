@@ -95,7 +95,7 @@ impl std::str::FromStr for TransitionType {
             "any" => Ok(Self::Any),
             "random" => Ok(Self::Random),
             _ => Err("unrecognized transition type. Valid transitions are:\
-                     simple | lest | right | top | bottom | wipe | grow | center | outer | random\
+                     simple | left | right | top | bottom | wipe | grow | center | outer | random\
                      see swww img --help for more details"),
         }
     }
@@ -103,7 +103,7 @@ impl std::str::FromStr for TransitionType {
 
 #[derive(Parser, Serialize, Deserialize)]
 #[command(version, name = "swww")]
-///The Final Solution to your Wayland Wallpaper Woes
+///A Solution to your Wayland Wallpaper Woes
 ///
 ///Change what your monitors display as a background by controlling the swww daemon at runtime.
 ///Supports animated gifs and putting different stuff in different monitors. I also did my best to
@@ -197,7 +197,7 @@ pub struct Img {
     ///
     ///'wipe' is simillar to 'left' but allows you to specify the angle for transition (with the --transition-angle flag).
     ///
-    ///'grow' causes a growing circle to transition across the screen and allows changing the circle's center\
+    ///'grow' causes a growing circle to transition across the screen and allows changing the circle's center
     /// position (with --transition-pos flag).
     ///
     ///'center' an alias to 'grow' with position set to center of screen.
@@ -223,19 +223,11 @@ pub struct Img {
     #[arg(long, env = "SWWW_TRANSITION_STEP", default_value = "10")]
     pub transition_step: u8,
 
-    ///How fast the transition 'sweeps' through the screen
+    ///How long the transition takes to complete in seconds.
     ///
-    ///For any transition except 'simple', they work by starting at some point (or line), and
-    ///working their way through the screen, while changing the colors of the values they've passed
-    ///through. For exemple, 'left' will cause the transition to start from the left of the screen,
-    ///moving towards the right. Every value that's to the left will be updated accordingly. This
-    ///controls how fast the 'going to the right' motion goes.
-    ///
-    ///A value of 'n' means that we'll go 'n' columns at a time for the 'left' transition, for
-    ///example. For the transitions that work with radii ('center', 'outer' and 'any') a value of
-    ///'n' means that we'll increase the radius by 'n' every time.
-    #[arg(long, env = "SWWW_TRANSITION_SPEED", default_value = "5")]
-    pub transition_speed: u8,
+    ///Note that this doesnt work with the 'simple' transition
+    #[arg(long, env = "SWWW_TRANSITION_DURATION", default_value = "3")]
+    pub transition_duration: f32,
 
     ///Frame rate for the transition effect.
     ///
@@ -249,18 +241,114 @@ pub struct Img {
     ///This is only used for the 'wipe' transition. It controls the angle of the wipe (default is '0').
     ///
     ///Note that the angle is in degrees, where '0' is right to left and '90' is top to bottom, and '270' bottom to top
-    #[arg(long, env = "SWWW_TRANSITION_ANGLE", default_value = "0")]
+    #[arg(long, env = "SWWW_TRANSITION_ANGLE", default_value = "45")]
     pub transition_angle: f64,
 
     ///This is only used for the 'grow','outer' transitions. It controls the center of circle (default is 'center').
     ///
-    ///position values can be given in the format of '<x_pos>,<y_pos>', for example '700,0' is 700px from left and 0px from bottom
-    ///x_pos and y_pos can also be percentages, which are parsed according to screen size, for example '50%,50%' for center
+    ///position values are in the format 'x,y' where x and y are in the range [0,1.0] and represent the percentage of screen dimension
     ///
     ///the value can also be an alias which will set the position accordingly):
     /// 'center' | 'top' | 'left' | 'right' | 'bottom' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
-    #[arg(long, env = "SWWW_TRANSITION_POS", default_value = "center")]
-    pub transition_pos: String,
+    #[arg(long, env = "SWWW_TRANSITION_POS", default_value = "center", value_parser = parse_coords)]
+    pub transition_pos: (f32, f32),
+
+    ///bezier curve to use for the transition
+    ///https://cubic-bezier.com is a good website to get these values from
+    ///
+    ///eg: 0.0,0.0,1.0,1.0 for linear animation
+    #[arg(long, env = "SWWW_TRANSITION_BEZIER", default_value = ".54,0,.34,.99", value_parser = parse_bezier)]
+    pub transition_bezier: (f32, f32, f32, f32),
+}
+
+fn parse_bezier(raw: &str) -> Result<(f32, f32, f32, f32), String> {
+    let mut iter = raw.split(',');
+    let mut parse = || {
+        iter.next()
+            .ok_or_else(|| "Not enough values".to_string())
+            .and_then(|s| s.parse::<f32>().map_err(|e| e.to_string()))
+    };
+
+    let parsed = (parse()?, parse()?, parse()?, parse()?);
+    if parsed == (0.0, 0.0, 0.0, 0.0) {
+        return Err("Invalid bezier curve: 0,0,0,0 (try using 0,0,1,1 instead)".to_string());
+    }
+    Ok(parsed)
+}
+
+// parses percentages and numbers in format of "<coord1>,<coord2>"
+fn parse_coords(raw: &str) -> Result<(f32, f32), String> {
+    let coords = raw.split(',').map(|s| s.trim()).collect::<Vec<&str>>();
+    let x: &str;
+    let y: &str;
+    if coords.len() != 2 {
+        match coords[0] {
+            "center" => {
+                x = "0.5";
+                y = "0.5";
+            }
+            "top" => {
+                x = "0.5";
+                y = "1.0";
+            }
+            "bottom" => {
+                x = "0.5";
+                y = "0";
+            }
+            "left" => {
+                x = "0";
+                y = "0.5";
+            }
+            "right" => {
+                x = "1.0";
+                y = "0.5";
+            }
+            "top-left" => {
+                x = "0";
+                y = "1.0";
+            }
+            "top-right" => {
+                x = "1.0";
+                y = "1.0";
+            }
+            "bottom-left" => {
+                x = "0";
+                y = "0";
+            }
+            "bottom-right" => {
+                x = "1.0%";
+                y = "0";
+            }
+            _ => return Err(format!("Invalid position keyword: {}", raw)),
+        }
+    } else {
+        x = coords[0];
+        y = coords[1];
+    }
+
+    //parse x coord
+    let parsed_x = match x.parse::<f32>() {
+        Ok(x) => {
+            if !(0.0..=1.0).contains(&x) {
+                return Err(format!("x coord not in range [0,1.0]: {}", x));
+            }
+            x
+        }
+        Err(_) => return Err(format!("Invalid x coord: {}", x)),
+    };
+
+    //parse y coord
+    let parsed_y = match y.parse::<f32>() {
+        Ok(y) => {
+            if !(0.0..=1.0).contains(&y) {
+                return Err(format!("y coord not in range [0,1.0]: {}", y));
+            }
+            y
+        }
+        Err(_) => return Err(format!("Invalid y coord: {}", y)),
+    };
+
+    Ok((parsed_x, parsed_y))
 }
 
 #[cfg(test)]
